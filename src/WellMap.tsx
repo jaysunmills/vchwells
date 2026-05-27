@@ -24,6 +24,14 @@ function FlyTo({ center, zoom }: { center: [number, number]; zoom: number }) {
   return null
 }
 
+const GPS_CUTOFF_YEAR = 1990
+
+function isPreGps(well: Well): boolean {
+  if (!well.completionDate) return true
+  const year = parseInt(well.completionDate.split('/')[2])
+  return isNaN(year) || year < GPS_CUTOFF_YEAR
+}
+
 function markerColor(well: Well) {
   if (well.proposedUse === 'Geothermal') return '#fb923c'
   if (well.proposedUse === 'Domestic') return '#38bdf8'
@@ -189,24 +197,33 @@ export default function WellMap({ wells, initialSearch }: { wells: Well[]; initi
             )}
             {mappableWells
               .filter(well => !parcelMatchedWells.has(well.id))
-              .map(well => (
-              <CircleMarker
-                key={well.id}
-                center={[well.lat!, well.lng!]}
-                radius={selectedWellId === well.id ? 8 : 5}
-                pathOptions={{
-                  color: selectedWellId === well.id ? '#fff' : markerColor(well),
-                  fillColor: markerColor(well),
-                  fillOpacity: selectedWellId === well.id ? 1 : 0.7,
-                  weight: selectedWellId === well.id ? 2 : 1,
-                }}
-                eventHandlers={{ click: () => setSelectedWellId(well.id) }}
-              >
-                <Popup>
-                  <WellPopup well={well} />
-                </Popup>
-              </CircleMarker>
-            ))}
+              .map(well => {
+                const preGps = isPreGps(well)
+                return (
+                  <CircleMarker
+                    key={well.id}
+                    center={[well.lat!, well.lng!]}
+                    radius={selectedWellId === well.id ? 8 : 5}
+                    pathOptions={preGps ? {
+                      color: '#94a3b8',
+                      fillColor: '#94a3b8',
+                      fillOpacity: 0.3,
+                      weight: 2,
+                      dashArray: '4 4',
+                    } : {
+                      color: selectedWellId === well.id ? '#fff' : markerColor(well),
+                      fillColor: markerColor(well),
+                      fillOpacity: selectedWellId === well.id ? 1 : 0.7,
+                      weight: selectedWellId === well.id ? 2 : 1,
+                    }}
+                    eventHandlers={{ click: () => setSelectedWellId(well.id) }}
+                  >
+                    <Popup>
+                      <WellPopup well={well} preGps={preGps} />
+                    </Popup>
+                  </CircleMarker>
+                )
+              })}
           </MapContainer>
         </div>
         {hasResults && (
@@ -287,10 +304,11 @@ export default function WellMap({ wells, initialSearch }: { wells: Well[]; initi
   )
 }
 
-function WellPopup({ well }: { well: Well }) {
+function WellPopup({ well, preGps = false }: { well: Well; preGps?: boolean }) {
   return (
     <div className="well-popup">
       <h3>Well Log #{well.id}</h3>
+      {preGps && <p style={{ fontSize: '0.7rem', color: '#ea580c', margin: '0 0 0.5rem', fontWeight: 600 }}>Location approximate — surveyed before GPS</p>}
       <dl className="meta">
         {well.owner && <><dt>Owner</dt><dd>{well.owner}</dd></>}
         {well.drillDepth != null && <><dt>Drill Depth</dt><dd>{well.drillDepth} ft</dd></>}

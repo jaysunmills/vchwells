@@ -34,8 +34,16 @@ function pointInPolygon(lat: number, lng: number, coords: number[][]): boolean {
   return inside
 }
 
+const GPS_CUTOFF_YEAR = 1990
+
+function isPostGps(well: Well): boolean {
+  if (!well.completionDate) return false
+  const year = parseInt(well.completionDate.split('/')[2])
+  return !isNaN(year) && year >= GPS_CUTOFF_YEAR
+}
+
 function matchWellToParcel(well: Well, feature: GeoJSON.Feature): boolean {
-  if (!well.lat || !well.lng || !feature.geometry) return false
+  if (!well.lat || !well.lng || !feature.geometry || !isPostGps(well)) return false
   const geom = feature.geometry as GeoJSON.Polygon | GeoJSON.MultiPolygon
   if (geom.type === 'Polygon') {
     return pointInPolygon(well.lat, well.lng, geom.coordinates[0])
@@ -125,12 +133,14 @@ export default function ParcelLayer({ wells, onMatchedWells }: { wells: Well[]; 
         legend.onAdd = () => {
           const div = L.DomUtil.create('div', 'parcel-legend')
           div.innerHTML = `
-            <strong>Well Depth</strong>
+            <strong>Well Depth (post-1990)</strong>
             <div><span style="background:${DEPTH_COLORS.shallow}"></span> &lt; 100ft</div>
             <div><span style="background:${DEPTH_COLORS.medium}"></span> 100–300ft</div>
             <div><span style="background:${DEPTH_COLORS.deep}"></span> 300–500ft</div>
             <div><span style="background:${DEPTH_COLORS.veryDeep}"></span> 500ft+</div>
             <div><span style="background:#9ca3af"></span> No well data</div>
+            <strong style="margin-top:6px">Pre-1990 (approx.)</strong>
+            <div><span style="background:#94a3b8;border:2px dashed #64748b;width:10px;height:10px"></span> Location approximate</div>
           `
           return div
         }
