@@ -5,6 +5,7 @@ import 'leaflet/dist/leaflet.css'
 import type { Well } from './types'
 import type { MapSearch } from './App'
 import { haversineDistance } from './hooks'
+import ParcelLayer from './ParcelLayer'
 
 const STOREY_CENTER: [number, number] = [39.358, -119.567]
 const RADIUS_OPTIONS = [100, 200, 500, 1000, 2000]
@@ -45,6 +46,7 @@ export default function WellMap({ wells, initialSearch }: { wells: Well[]; initi
   const [radius, setRadius] = useState(500)
   const [searching, setSearching] = useState(false)
   const [selectedWellId, setSelectedWellId] = useState<string | null>(null)
+  const [parcelMatchedWells, setParcelMatchedWells] = useState<Set<string>>(new Set())
   const mapRef = useRef<LeafletMap | null>(null)
   const appliedInitialSearch = useRef(false)
 
@@ -165,6 +167,7 @@ export default function WellMap({ wells, initialSearch }: { wells: Well[]; initi
                 />
               </LayersControl.BaseLayer>
             </LayersControl>
+            <ParcelLayer wells={mappableWells} onMatchedWells={setParcelMatchedWells} />
             {flyTarget && <FlyTo center={flyTarget.center} zoom={flyTarget.zoom} />}
             {searchCenter && (
               <Circle
@@ -184,7 +187,9 @@ export default function WellMap({ wells, initialSearch }: { wells: Well[]; initi
                 </Popup>
               </CircleMarker>
             )}
-            {mappableWells.map(well => (
+            {mappableWells
+              .filter(well => !parcelMatchedWells.has(well.id))
+              .map(well => (
               <CircleMarker
                 key={well.id}
                 center={[well.lat!, well.lng!]}

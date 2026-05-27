@@ -172,6 +172,38 @@ export default function Dashboard({ wells, onSearch }: { wells: Well[]; onSearch
         </p>
       </div>
 
+      <div className="about-section data-notice">
+        <h3>A Note on Data Accuracy</h3>
+        <p>
+          This data comes directly from the NDWR database and has known limitations you should be aware of:
+        </p>
+        <ul>
+          <li>
+            <strong>These are drilling attempts, not necessarily producing wells.</strong> Some
+            records represent boreholes that came up dry. A pin on the map does not mean there is an
+            active well at that location.
+          </li>
+          <li>
+            <strong>Well locations may be inaccurate.</strong> Many older wells were logged before GPS
+            existed. Locations were estimated using the Public Land Survey System (PLSS), often only to
+            the nearest quarter-quarter section — which can place a pin hundreds of feet from the actual
+            well. The USGS has confirmed this is a known issue in the NDWR database.
+          </li>
+          <li>
+            <strong>The well probably exists, just not exactly where the map shows it.</strong> If you
+            see a well on your property that you don't recognize, check the log's completion date and
+            APN — the original well report can usually be traced through
+            the <a href="https://tools.water.nv.gov/WellLogQuery.aspx" target="_blank" rel="noopener noreferrer">NDWR well log search</a> or
+            the <a href="https://storeycounty.org" target="_blank" rel="noopener noreferrer">county assessor records</a>.
+          </li>
+        </ul>
+        <p>
+          Use this tool as a starting point for research, not as a definitive record. For anything
+          involving permits, drilling decisions, or property transactions, always verify with the
+          official NDWR records and a licensed professional.
+        </p>
+      </div>
+
       <div className="chart-section">
         <h3>Drill Depth Distribution</h3>
         <ResponsiveContainer width="100%" height={220}>
