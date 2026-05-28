@@ -18,7 +18,7 @@ export function useWellStats(wells: Well[]) {
     const byUse: Record<string, number> = {}
     const byType: Record<string, number> = {}
     const depthBuckets: Record<string, number> = {
-      '0–100': 0, '101–200': 0, '201–300': 0, '301–500': 0, '501–1000': 0, '1000+': 0,
+      '< 250': 0, '250–500': 0, '500+': 0,
     }
     const drillerCounts: Record<string, number> = {}
     const byBasin: Record<string, number> = {}
@@ -38,12 +38,9 @@ export function useWellStats(wells: Well[]) {
 
       if (w.drillDepth != null) {
         const d = w.drillDepth
-        if (d <= 100) depthBuckets['0–100']++
-        else if (d <= 200) depthBuckets['101–200']++
-        else if (d <= 300) depthBuckets['201–300']++
-        else if (d <= 500) depthBuckets['301–500']++
-        else if (d <= 1000) depthBuckets['501–1000']++
-        else depthBuckets['1000+']++
+        if (d < 250) depthBuckets['< 250']++
+        else if (d <= 500) depthBuckets['250–500']++
+        else depthBuckets['500+']++
       }
     }
 
@@ -61,6 +58,20 @@ export function useWellStats(wells: Well[]) {
       return !isNaN(y) && y > max ? y : max
     }, 0)
 
+    // Data quality stats
+    let parcelMatched = 0
+    let userVerified = 0
+    let logScanned = 0
+    let noApn = 0
+    let hasAddress = 0
+    for (const w of wells) {
+      if (w.gpsSource === 'user_verified') userVerified++
+      if (w.dataQuality === 'parcel_matched') parcelMatched++
+      if (w.dataQuality === 'log_scanned') logScanned++
+      if (w.dataQuality === 'no_apn') noApn++
+      if (w.scanAddress) hasAddress++
+    }
+
     return {
       total: wells.length,
       avgDepth: Math.round(avgDepth),
@@ -76,12 +87,58 @@ export function useWellStats(wells: Well[]) {
       byBasin,
       oldestYear,
       newestYear,
+      quality: {
+        parcelMatched,
+        userVerified,
+        logScanned,
+        noApn,
+        hasAddress,
+      },
     }
   }, [wells])
 }
 
 function sorted(arr: number[]) {
   return [...arr].sort((a, b) => a - b)
+}
+
+export function normalizeApnForParcel(wellApn: string): string | null {
+  if (!wellApn || !wellApn.includes('-')) return null
+  const parts = wellApn.split('-')
+  if (parts.length !== 3) return null
+  const book = parseInt(parts[0])
+  if (isNaN(book)) return null
+  return `${book}${parts[1]}${parts[2]}`
+}
+
+const PARCEL_QUERY_URL = 'https://arcgis.water.nv.gov/arcgis/rest/services/BaseLayers/County_Parcels_in_Nevada/MapServer/0/query'
+
+export async function lookupParcelByApn(apn: string): Promise<{ center: [number, number]; acres: number; parcelApn: string } | null> {
+  const normalized = apn.replace(/-/g, '').replace(/\s/g, '')
+  const tryApns = [normalized]
+  if (apn.includes('-')) {
+    const pa = normalizeApnForParcel(apn)
+    if (pa) tryApns.unshift(pa)
+  }
+
+  for (const tryApn of tryApns) {
+    const url = `${PARCEL_QUERY_URL}?where=APN%3D%27${tryApn}%27+AND+County%3D%27Storey%27&outFields=APN,Acres&returnGeometry=true&outSR=4326&f=geojson`
+    const resp = await fetch(url)
+    const data = await resp.json()
+    if (data.features?.length > 0) {
+      const f = data.features[0]
+      const geom = f.geometry
+      const coords = geom.type === 'Polygon' ? geom.coordinates[0] : geom.coordinates[0][0]
+      const lats = coords.map((c: number[]) => c[1])
+      const lngs = coords.map((c: number[]) => c[0])
+      return {
+        center: [lats.reduce((a: number, b: number) => a + b, 0) / lats.length, lngs.reduce((a: number, b: number) => a + b, 0) / lngs.length],
+        acres: f.properties.Acres,
+        parcelApn: f.properties.APN,
+      }
+    }
+  }
+  return null
 }
 
 export function haversineDistance(lat1: number, lng1: number, lat2: number, lng2: number): number {

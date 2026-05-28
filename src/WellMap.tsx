@@ -1,10 +1,10 @@
 import { useState, useMemo, useCallback, useRef, useEffect } from 'react'
-import { MapContainer, TileLayer, CircleMarker, Popup, Circle, useMap, LayersControl } from 'react-leaflet'
+import { MapContainer, TileLayer, useMap, LayersControl } from 'react-leaflet'
 import type { Map as LeafletMap } from 'leaflet'
 import 'leaflet/dist/leaflet.css'
 import type { Well } from './types'
 import type { MapSearch } from './App'
-import { haversineDistance } from './hooks'
+import { haversineDistance, lookupParcelByApn, normalizeApnForParcel } from './hooks'
 import ParcelLayer from './ParcelLayer'
 
 const STOREY_CENTER: [number, number] = [39.358, -119.567]
@@ -24,20 +24,6 @@ function FlyTo({ center, zoom }: { center: [number, number]; zoom: number }) {
   return null
 }
 
-const GPS_CUTOFF_YEAR = 1990
-
-function isPreGps(well: Well): boolean {
-  if (!well.completionDate) return true
-  const year = parseInt(well.completionDate.split('/')[2])
-  return isNaN(year) || year < GPS_CUTOFF_YEAR
-}
-
-function markerColor(well: Well) {
-  if (well.proposedUse === 'Geothermal') return '#fb923c'
-  if (well.proposedUse === 'Domestic') return '#38bdf8'
-  return '#a78bfa'
-}
-
 function formatRadius(r: number) {
   return r >= 1000 ? `${r / 1000}km` : `${r}m`
 }
@@ -49,21 +35,30 @@ function formatDistance(km: number) {
 
 export default function WellMap({ wells, initialSearch }: { wells: Well[]; initialSearch?: MapSearch | null }) {
   const [searchText, setSearchText] = useState('')
+  const [searchMode, setSearchMode] = useState<'address' | 'apn'>('address')
   const [searchCenter, setSearchCenter] = useState<[number, number] | null>(null)
   const [flyTarget, setFlyTarget] = useState<{ center: [number, number]; zoom: number } | null>(null)
   const [radius, setRadius] = useState(500)
   const [searching, setSearching] = useState(false)
   const [selectedWellId, setSelectedWellId] = useState<string | null>(null)
-  const [parcelMatchedWells, setParcelMatchedWells] = useState<Set<string>>(new Set())
+  const [, setParcelMatchedWells] = useState<Set<string>>(new Set())
+  const [apnResult, setApnResult] = useState<{ wells: Well[]; parcelApn: string; acres: number } | null>(null)
   const mapRef = useRef<LeafletMap | null>(null)
   const appliedInitialSearch = useRef(false)
 
   useEffect(() => {
     if (initialSearch && !appliedInitialSearch.current) {
       appliedInitialSearch.current = true
-      setSearchCenter(initialSearch.center)
-      setRadius(initialSearch.radius)
-      setFlyTarget({ center: initialSearch.center, zoom: ZOOM_FOR_RADIUS[initialSearch.radius] ?? 15 })
+      if (initialSearch.type === 'address') {
+        setSearchMode('address')
+        setSearchCenter(initialSearch.center)
+        setRadius(initialSearch.radius)
+        setFlyTarget({ center: initialSearch.center, zoom: ZOOM_FOR_RADIUS[initialSearch.radius] ?? 15 })
+      } else {
+        setSearchMode('apn')
+        setSearchText(initialSearch.apn)
+        handleApnSearch(initialSearch.apn)
+      }
     }
   }, [initialSearch])
 
@@ -94,14 +89,81 @@ export default function WellMap({ wells, initialSearch }: { wells: Well[]; initi
     }
   }, [nearbyWells])
 
-  const handleSearch = useCallback(async () => {
-    if (!searchText.trim()) return
+  const handleApnSearch = useCallback(async (apnOverride?: string) => {
+    const apn = apnOverride || searchText.trim()
+    if (!apn) return
     setSearching(true)
     setSelectedWellId(null)
+    setApnResult(null)
+    setSearchCenter(null)
     try {
-      const query = `${searchText.trim()}, Storey County, Nevada`
+      const result = await lookupParcelByApn(apn)
+      if (result) {
+        const matchedWells = wells.filter(w => {
+          const pa = normalizeApnForParcel(w.apn)
+          return pa === result.parcelApn
+        })
+        setApnResult({ wells: matchedWells, parcelApn: result.parcelApn, acres: result.acres })
+        setFlyTarget({ center: result.center, zoom: 17 })
+        setSearchCenter(result.center)
+      } else {
+        alert('Parcel not found. Try a different APN format (e.g. 003-331-10 or 333110).')
+      }
+    } catch {
+      alert('Search failed. Check your internet connection.')
+    } finally {
+      setSearching(false)
+    }
+  }, [searchText, wells])
+
+  const handleSearch = useCallback(async () => {
+    if (!searchText.trim()) return
+    if (searchMode === 'apn') {
+      handleApnSearch()
+      return
+    }
+    setSearching(true)
+    setSelectedWellId(null)
+    setApnResult(null)
+    try {
+      // 1. Try matching against our scanned addresses first (more accurate for VCH)
+      const query = searchText.trim().toLowerCase()
+      const queryNum = query.match(/^\d+/)?.[0]
+      const queryStreet = query.replace(/^\d+\s*/, '').replace(/\s+(rd|road|dr|drive|st|street|ave|avenue|ln|lane|ct|court|way)\.?$/i, '').trim()
+
+      const wellMatch = wells.find(w => {
+        if (!w.scanAddress) return false
+        const addr = w.scanAddress.toLowerCase()
+        if (queryNum && !addr.startsWith(queryNum)) return false
+        if (queryStreet && !addr.includes(queryStreet)) return false
+        return true
+      })
+
+      if (wellMatch && wellMatch.parcelApn) {
+        // We know the exact parcel via the well's APN — use APN-based highlight
+        const result = await lookupParcelByApn(wellMatch.apn || wellMatch.parcelApn)
+        if (result) {
+          const matchedWells = wells.filter(w => {
+            const pa = normalizeApnForParcel(w.apn)
+            return pa === result.parcelApn
+          })
+          setApnResult({ wells: matchedWells, parcelApn: result.parcelApn, acres: result.acres })
+          setFlyTarget({ center: result.center, zoom: 17 })
+          setSearchCenter(result.center)
+          return
+        }
+      }
+      if (wellMatch && wellMatch.lat && wellMatch.lng) {
+        const center: [number, number] = [wellMatch.lat, wellMatch.lng]
+        setSearchCenter(center)
+        setFlyTarget({ center, zoom: 17 })
+        return
+      }
+
+      // 2. Fall back to Nominatim
+      const geocodeQuery = `${searchText.trim()}, Storey County, Nevada`
       const resp = await fetch(
-        `https://nominatim.openstreetmap.org/search?format=json&q=${encodeURIComponent(query)}&limit=1`,
+        `https://nominatim.openstreetmap.org/search?format=json&q=${encodeURIComponent(geocodeQuery)}&limit=5&countrycodes=us&viewbox=-119.75,39.45,-119.45,39.25&bounded=1`,
       )
       const results = await resp.json()
       if (results.length > 0) {
@@ -117,7 +179,7 @@ export default function WellMap({ wells, initialSearch }: { wells: Well[]; initi
     } finally {
       setSearching(false)
     }
-  }, [searchText, radius])
+  }, [searchText, radius, searchMode, handleApnSearch])
 
   const handleRadiusChange = useCallback((newRadius: number) => {
     setRadius(newRadius)
@@ -126,25 +188,31 @@ export default function WellMap({ wells, initialSearch }: { wells: Well[]; initi
     }
   }, [searchCenter])
 
-  const hasResults = nearbyWells != null
+  const hasResults = nearbyWells != null || apnResult != null
 
   return (
     <div className="map-page">
       <div className="map-controls">
+        <div className="search-toggle">
+          <button className={searchMode === 'address' ? 'active' : ''} onClick={() => setSearchMode('address')}>Address</button>
+          <button className={searchMode === 'apn' ? 'active' : ''} onClick={() => setSearchMode('apn')}>APN</button>
+        </div>
         <input
           className="search-input"
-          placeholder="Enter address or road name (e.g. Lousetown Rd, Virginia City)"
+          placeholder={searchMode === 'address' ? 'Enter address or road name...' : 'Enter APN (e.g. 003-331-10)'}
           value={searchText}
           onChange={e => setSearchText(e.target.value)}
           onKeyDown={e => e.key === 'Enter' && handleSearch()}
         />
-        <select className="radius-select" value={radius} onChange={e => handleRadiusChange(Number(e.target.value))}>
-          {RADIUS_OPTIONS.map(r => (
-            <option key={r} value={r}>{formatRadius(r)} radius</option>
-          ))}
-        </select>
+        {searchMode === 'address' && (
+          <select className="radius-select" value={radius} onChange={e => handleRadiusChange(Number(e.target.value))}>
+            {RADIUS_OPTIONS.map(r => (
+              <option key={r} value={r}>{formatRadius(r)} radius</option>
+            ))}
+          </select>
+        )}
         <button className="search-btn" onClick={handleSearch} disabled={searching}>
-          {searching ? 'Searching...' : 'Search'}
+          {searching ? 'Searching...' : searchMode === 'apn' ? 'Look Up' : 'Search'}
         </button>
       </div>
       <div className={hasResults ? 'map-split' : 'map-body'}>
@@ -175,128 +243,60 @@ export default function WellMap({ wells, initialSearch }: { wells: Well[]; initi
                 />
               </LayersControl.BaseLayer>
             </LayersControl>
-            <ParcelLayer wells={mappableWells} onMatchedWells={setParcelMatchedWells} />
+            <ParcelLayer wells={mappableWells} onMatchedWells={setParcelMatchedWells} searchParcelApn={apnResult?.parcelApn ?? null} searchPoint={!apnResult && searchCenter ? searchCenter : null} />
             {flyTarget && <FlyTo center={flyTarget.center} zoom={flyTarget.zoom} />}
-            {searchCenter && (
-              <Circle
-                center={searchCenter}
-                radius={radius}
-                pathOptions={{ color: '#38bdf8', fillColor: '#38bdf8', fillOpacity: 0.08, weight: 2, dashArray: '8 4' }}
-              />
-            )}
-            {searchCenter && (
-              <CircleMarker
-                center={searchCenter}
-                radius={8}
-                pathOptions={{ color: '#f43f5e', fillColor: '#f43f5e', fillOpacity: 1, weight: 2 }}
-              >
-                <Popup>
-                  <div className="well-popup"><h3>Search Location</h3></div>
-                </Popup>
-              </CircleMarker>
-            )}
-            {mappableWells
-              .filter(well => !parcelMatchedWells.has(well.id))
-              .map(well => {
-                const preGps = isPreGps(well)
-                return (
-                  <CircleMarker
-                    key={well.id}
-                    center={[well.lat!, well.lng!]}
-                    radius={selectedWellId === well.id ? 8 : 5}
-                    pathOptions={preGps ? {
-                      color: '#94a3b8',
-                      fillColor: '#94a3b8',
-                      fillOpacity: 0.3,
-                      weight: 2,
-                      dashArray: '4 4',
-                    } : {
-                      color: selectedWellId === well.id ? '#fff' : markerColor(well),
-                      fillColor: markerColor(well),
-                      fillOpacity: selectedWellId === well.id ? 1 : 0.7,
-                      weight: selectedWellId === well.id ? 2 : 1,
-                    }}
-                    eventHandlers={{ click: () => setSelectedWellId(well.id) }}
-                  >
-                    <Popup>
-                      <WellPopup well={well} preGps={preGps} />
-                    </Popup>
-                  </CircleMarker>
-                )
-              })}
           </MapContainer>
         </div>
         {hasResults && (
           <div className="results-panel">
-            <div className="results-header">
-              <div className="results-title">
-                <strong>{nearbyStats!.count}</strong> wells within {formatRadius(radius)}
-              </div>
-              {nearbyStats!.avgDepth != null && (
-                <div className="results-stat">
-                  Avg depth <strong>{nearbyStats!.avgDepth}ft</strong>
-                  {nearbyStats!.avgWater != null && <> · Water level <strong>{nearbyStats!.avgWater}ft</strong></>}
-                </div>
-              )}
-            </div>
-            <div className="results-list">
-              {nearbyWells!.length === 0 && (
-                <div className="results-empty">No wells found within {formatRadius(radius)}. Try a larger radius.</div>
-              )}
-              {nearbyWells!.map(({ well, distance }) => (
-                <div
-                  key={well.id}
-                  className={`result-card ${selectedWellId === well.id ? 'result-card-active' : ''}`}
-                  onClick={() => {
-                    setSelectedWellId(well.id)
-                    if (well.lat && well.lng) {
-                      mapRef.current?.flyTo([well.lat, well.lng], Math.max(ZOOM_FOR_RADIUS[radius] ?? 15, 16), { duration: 0.5 })
-                    }
-                  }}
-                >
-                  <div className="result-card-top">
-                    <span className="result-id">#{well.id}</span>
-                    <span className="result-distance">{formatDistance(distance)}</span>
+            {apnResult ? (
+              <>
+                <div className="results-header">
+                  <div className="results-title">
+                    Parcel <strong>{apnResult.parcelApn}</strong>
                   </div>
-                  {well.owner && <div className="result-owner">{well.owner}</div>}
-                  <div className="result-details">
-                    {well.drillDepth != null && (
-                      <div className="result-detail">
-                        <span className="result-detail-label">Depth</span>
-                        <span className="result-detail-value">{well.drillDepth}ft</span>
-                      </div>
-                    )}
-                    {well.staticWaterLevel != null && (
-                      <div className="result-detail">
-                        <span className="result-detail-label">Water</span>
-                        <span className="result-detail-value">{well.staticWaterLevel}ft</span>
-                      </div>
-                    )}
-                    {well.completionDate && (
-                      <div className="result-detail">
-                        <span className="result-detail-label">Date</span>
-                        <span className="result-detail-value">{well.completionDate}</span>
-                      </div>
-                    )}
-                    {well.casingDiameter && (
-                      <div className="result-detail">
-                        <span className="result-detail-label">Casing</span>
-                        <span className="result-detail-value">{well.casingDiameter}"</span>
-                      </div>
-                    )}
-                  </div>
-                  <div className="result-tags">
-                    <span className={
-                      well.proposedUse === 'Domestic' ? 'badge badge-domestic' :
-                      well.proposedUse === 'Geothermal' ? 'badge badge-geothermal' :
-                      'badge badge-other'
-                    }>{well.proposedUse}</span>
-                    {well.workType && <span className="badge badge-other">{well.workType}</span>}
-                    {well.drillerName && <span className="result-driller">{well.drillerName}</span>}
+                  <div className="results-stat">
+                    {apnResult.acres.toFixed(2)} acres · <strong>{apnResult.wells.length}</strong> well{apnResult.wells.length !== 1 ? 's' : ''} on record
                   </div>
                 </div>
-              ))}
-            </div>
+                <div className="results-list">
+                  {apnResult.wells.length === 0 && (
+                    <div className="results-empty">No wells found on this parcel.</div>
+                  )}
+                  {apnResult.wells.map(well => (
+                    <WellCard key={well.id} well={well} selected={selectedWellId === well.id} onSelect={() => {
+                      setSelectedWellId(well.id)
+                      if (well.lat && well.lng) mapRef.current?.flyTo([well.lat, well.lng], 17, { duration: 0.5 })
+                    }} />
+                  ))}
+                </div>
+              </>
+            ) : (
+              <>
+                <div className="results-header">
+                  <div className="results-title">
+                    <strong>{nearbyStats!.count}</strong> wells within {formatRadius(radius)}
+                  </div>
+                  {nearbyStats!.avgDepth != null && (
+                    <div className="results-stat">
+                      Avg depth <strong>{nearbyStats!.avgDepth}ft</strong>
+                      {nearbyStats!.avgWater != null && <> · Water level <strong>{nearbyStats!.avgWater}ft</strong></>}
+                    </div>
+                  )}
+                </div>
+                <div className="results-list">
+                  {nearbyWells!.length === 0 && (
+                    <div className="results-empty">No wells found within {formatRadius(radius)}. Try a larger radius.</div>
+                  )}
+                  {nearbyWells!.map(({ well, distance }) => (
+                    <WellCard key={well.id} well={well} distance={distance} selected={selectedWellId === well.id} onSelect={() => {
+                      setSelectedWellId(well.id)
+                      if (well.lat && well.lng) mapRef.current?.flyTo([well.lat, well.lng], Math.max(ZOOM_FOR_RADIUS[radius] ?? 15, 16), { duration: 0.5 })
+                    }} />
+                  ))}
+                </div>
+              </>
+            )}
           </div>
         )}
       </div>
@@ -304,23 +304,61 @@ export default function WellMap({ wells, initialSearch }: { wells: Well[]; initi
   )
 }
 
-function WellPopup({ well, preGps = false }: { well: Well; preGps?: boolean }) {
+function confidenceBadge(confidence: string | null | undefined) {
+  if (!confidence || confidence === 'unknown') return null
+  const cls = confidence === 'high' ? 'badge-domestic' : confidence === 'medium' ? 'badge-other' : 'badge-geothermal'
+  return <span className={`badge ${cls}`} style={{ fontSize: '0.6rem' }}>{confidence}</span>
+}
+
+function WellCard({ well, distance, selected, onSelect }: { well: Well; distance?: number; selected: boolean; onSelect: () => void }) {
   return (
-    <div className="well-popup">
-      <h3>Well Log #{well.id}</h3>
-      {preGps && <p style={{ fontSize: '0.7rem', color: '#ea580c', margin: '0 0 0.5rem', fontWeight: 600 }}>Location approximate — surveyed before GPS</p>}
-      <dl className="meta">
-        {well.owner && <><dt>Owner</dt><dd>{well.owner}</dd></>}
-        {well.drillDepth != null && <><dt>Drill Depth</dt><dd>{well.drillDepth} ft</dd></>}
-        {well.staticWaterLevel != null && <><dt>Water Level</dt><dd>{well.staticWaterLevel} ft</dd></>}
-        {well.completionDate && <><dt>Completed</dt><dd>{well.completionDate}</dd></>}
-        {well.drillerName && <><dt>Driller</dt><dd>{well.drillerName}</dd></>}
-        {well.workType && <><dt>Type</dt><dd>{well.workType}</dd></>}
-        {well.casingDiameter && <><dt>Casing</dt><dd>{well.casingDiameter}"</dd></>}
-        <dt>Location</dt><dd>T{well.township} R{well.range} S{well.section} {well.quarterQuarter}</dd>
-        <dt>Basin</dt><dd>{well.basinName}</dd>
-        {well.apn && <><dt>APN</dt><dd>{well.apn}</dd></>}
-      </dl>
+    <div className={`result-card ${selected ? 'result-card-active' : ''}`} onClick={onSelect}>
+      <div className="result-card-top">
+        <span className="result-id">#{well.id}</span>
+        <span style={{ display: 'flex', gap: '0.375rem', alignItems: 'center' }}>
+          {confidenceBadge(well.scanConfidence)}
+          {distance != null && <span className="result-distance">{formatDistance(distance)}</span>}
+        </span>
+      </div>
+      {well.scanAddress && <div className="result-address">{well.scanAddress}</div>}
+      {well.owner && <div className="result-owner">{well.owner}</div>}
+      <div className="result-details">
+        {well.drillDepth != null && (
+          <div className="result-detail">
+            <span className="result-detail-label">Depth</span>
+            <span className="result-detail-value">{well.drillDepth}ft</span>
+          </div>
+        )}
+        {well.staticWaterLevel != null && (
+          <div className="result-detail">
+            <span className="result-detail-label">Water</span>
+            <span className="result-detail-value">{well.staticWaterLevel}ft</span>
+          </div>
+        )}
+        {well.completionDate && (
+          <div className="result-detail">
+            <span className="result-detail-label">Date</span>
+            <span className="result-detail-value">{well.completionDate}</span>
+          </div>
+        )}
+        {well.casingDiameter && (
+          <div className="result-detail">
+            <span className="result-detail-label">Casing</span>
+            <span className="result-detail-value">{well.casingDiameter}"</span>
+          </div>
+        )}
+      </div>
+      <div className="result-tags">
+        <span className={
+          well.proposedUse === 'Domestic' ? 'badge badge-domestic' :
+          well.proposedUse === 'Geothermal' ? 'badge badge-geothermal' :
+          'badge badge-other'
+        }>{well.proposedUse}</span>
+        {well.workType && <span className="badge badge-other">{well.workType}</span>}
+        {well.drillerName && <span className="result-driller">{well.drillerName}</span>}
+        {well.pdfUrl && <a className="result-pdf" href={well.pdfUrl} target="_blank" rel="noopener noreferrer" onClick={e => e.stopPropagation()}>View Log</a>}
+      </div>
     </div>
   )
 }
+

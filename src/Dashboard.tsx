@@ -1,6 +1,7 @@
 import { useState, useCallback } from 'react'
 import { BarChart, Bar, XAxis, YAxis, Tooltip, ResponsiveContainer } from 'recharts'
 import type { Well } from './types'
+import type { MapSearch } from './App'
 import { useWellStats } from './hooks'
 
 const TOOLTIP_STYLE = { background: '#fff', border: '1px solid #e5e7eb', borderRadius: 8, color: '#111827' }
@@ -69,9 +70,10 @@ function formatRadius(r: number) {
   return r >= 1000 ? `${r / 1000}km` : `${r}m`
 }
 
-export default function Dashboard({ wells, onSearch }: { wells: Well[]; onSearch: (center: [number, number], radius: number) => void }) {
+export default function Dashboard({ wells, onSearch, onShowTerms }: { wells: Well[]; onSearch: (search: MapSearch) => void; onShowTerms: () => void }) {
   const stats = useWellStats(wells)
   const [searchText, setSearchText] = useState('')
+  const [searchMode, setSearchMode] = useState<'address' | 'apn'>('address')
   const [searching, setSearching] = useState(false)
   const [radius, setRadius] = useState(500)
 
@@ -80,16 +82,44 @@ export default function Dashboard({ wells, onSearch }: { wells: Well[]; onSearch
 
   const handleSearch = useCallback(async () => {
     if (!searchText.trim()) return
+    if (searchMode === 'apn') {
+      onSearch({ type: 'apn', apn: searchText.trim() })
+      return
+    }
     setSearching(true)
     try {
-      const query = `${searchText.trim()}, Storey County, Nevada`
+      // 1. Try matching against scanned addresses first (more accurate for VCH)
+      const query = searchText.trim().toLowerCase()
+      const queryNum = query.match(/^\d+/)?.[0]
+      const queryStreet = query.replace(/^\d+\s*/, '').replace(/\s+(rd|road|dr|drive|st|street|ave|avenue|ln|lane|ct|court|way)\.?$/i, '').trim()
+
+      const wellMatch = wells.find(w => {
+        if (!w.scanAddress) return false
+        const addr = w.scanAddress.toLowerCase()
+        if (queryNum && !addr.startsWith(queryNum)) return false
+        if (queryStreet && !addr.includes(queryStreet)) return false
+        return true
+      })
+
+      if (wellMatch && wellMatch.apn) {
+        // We have a matching parcel — search by APN to highlight the exact parcel
+        onSearch({ type: 'apn', apn: wellMatch.apn })
+        return
+      }
+      if (wellMatch && wellMatch.lat && wellMatch.lng) {
+        onSearch({ type: 'address', center: [wellMatch.lat, wellMatch.lng], radius })
+        return
+      }
+
+      // 2. Fall back to Nominatim
+      const geocodeQuery = `${searchText.trim()}, Storey County, Nevada`
       const resp = await fetch(
-        `https://nominatim.openstreetmap.org/search?format=json&q=${encodeURIComponent(query)}&limit=1`,
+        `https://nominatim.openstreetmap.org/search?format=json&q=${encodeURIComponent(geocodeQuery)}&limit=5&countrycodes=us&viewbox=-119.75,39.45,-119.45,39.25&bounded=1`,
       )
       const results = await resp.json()
       if (results.length > 0) {
         const { lat, lon } = results[0]
-        onSearch([parseFloat(lat), parseFloat(lon)], radius)
+        onSearch({ type: 'address', center: [parseFloat(lat), parseFloat(lon)], radius })
       } else {
         alert('Address not found. Try a road name or landmark in Storey County.')
       }
@@ -98,7 +128,7 @@ export default function Dashboard({ wells, onSearch }: { wells: Well[]; onSearch
     } finally {
       setSearching(false)
     }
-  }, [searchText, radius, onSearch])
+  }, [searchText, radius, searchMode, onSearch, wells])
 
   return (
     <div className="dashboard">
@@ -113,23 +143,37 @@ export default function Dashboard({ wells, onSearch }: { wells: Well[]; onSearch
       </div>
 
       <div className="cta-search">
+        <div className="cta-disclaimer">
+          <strong>Important:</strong> Data is sourced from publicly available Nevada Division of Water Resources records,
+          enhanced with parcel boundaries from the state GIS service and selectively verified against original scanned well logs.
+          The source data has known accuracy issues — older wells (pre-1990) often have inaccurate GPS coordinates, and some
+          APNs in the state database have transcription errors.
+          <strong> Do not use this tool to make financial, legal, drilling, or property decisions.</strong>
+          See <button className="link-button" onClick={onShowTerms}>full terms</button>.
+        </div>
         <h3>Find wells near your property</h3>
-        <p>Enter an address to see nearby well depths, water levels, and drilling history on an interactive map.</p>
+        <p>Search by address to see nearby wells, or look up a specific parcel by APN.</p>
         <div className="cta-search-row">
+          <div className="search-toggle">
+            <button className={searchMode === 'address' ? 'active' : ''} onClick={() => setSearchMode('address')}>Address</button>
+            <button className={searchMode === 'apn' ? 'active' : ''} onClick={() => setSearchMode('apn')}>APN</button>
+          </div>
           <input
             className="cta-search-input"
-            placeholder="e.g. 123 Lousetown Rd, Virginia City"
+            placeholder={searchMode === 'address' ? 'e.g. 123 Lousetown Rd, Virginia City' : 'e.g. 003-331-10'}
             value={searchText}
             onChange={e => setSearchText(e.target.value)}
             onKeyDown={e => e.key === 'Enter' && handleSearch()}
           />
-          <select className="radius-select" value={radius} onChange={e => setRadius(Number(e.target.value))}>
-            {RADIUS_OPTIONS.map(r => (
-              <option key={r} value={r}>{formatRadius(r)}</option>
-            ))}
-          </select>
+          {searchMode === 'address' && (
+            <select className="radius-select" value={radius} onChange={e => setRadius(Number(e.target.value))}>
+              {RADIUS_OPTIONS.map(r => (
+                <option key={r} value={r}>{formatRadius(r)}</option>
+              ))}
+            </select>
+          )}
           <button className="cta-search-btn" onClick={handleSearch} disabled={searching}>
-            {searching ? 'Searching...' : 'Find Nearby Wells'}
+            {searching ? 'Searching...' : searchMode === 'apn' ? 'Look Up Parcel' : 'Find Nearby Wells'}
           </button>
         </div>
       </div>
@@ -157,25 +201,36 @@ export default function Dashboard({ wells, onSearch }: { wells: Well[]; onSearch
         </div>
       </div>
 
-      <div className="about-section">
-        <h3>About This Site</h3>
-        <p>
-          Built by a local resident who was shopping for property in Virginia City Highlands and got
-          frustrated trying to make sense of the state's well log data. The government websites have the
-          information, but good luck actually finding what you need. So this happened — a simple tool that
-          takes publicly available well log data from the Nevada Division of Water Resources and makes it
-          searchable by address, visible on a map, and broken down into the numbers that actually matter
-          when you're looking at land or planning a well. Whether you're a homeowner exploring your options,
-          a buyer doing due diligence, or just curious about the water under your feet, this is for you.
-          Currently this site only covers the Virginia City Highlands area. Owner names have been
-          abbreviated for privacy. Data last refreshed May 27, 2026.
-        </p>
+      <div className="quality-section">
+        <h3>Data Quality</h3>
+        <p className="quality-intro">How much of the well data can we trust at the parcel level?</p>
+        <div className="quality-bar">
+          <div className="quality-segment verified" style={{ flex: stats.quality.userVerified }} title={`${stats.quality.userVerified} user verified`} />
+          <div className="quality-segment scanned" style={{ flex: stats.quality.logScanned }} title={`${stats.quality.logScanned} log scanned`} />
+          <div className="quality-segment matched" style={{ flex: stats.quality.parcelMatched }} title={`${stats.quality.parcelMatched} parcel matched`} />
+          <div className="quality-segment unmatched" style={{ flex: stats.total - stats.quality.userVerified - stats.quality.logScanned - stats.quality.parcelMatched }} title="No parcel match" />
+        </div>
+        <div className="quality-legend">
+          <div><span className="qd verified"></span><strong>{stats.quality.userVerified}</strong> User verified GPS</div>
+          <div><span className="qd scanned"></span><strong>{stats.quality.logScanned}</strong> Log scanned (PDF read)</div>
+          <div><span className="qd matched"></span><strong>{stats.quality.parcelMatched}</strong> Parcel matched (by APN)</div>
+          <div><span className="qd unmatched"></span><strong>{stats.total - stats.quality.userVerified - stats.quality.logScanned - stats.quality.parcelMatched}</strong> Unmatched (no APN or no parcel)</div>
+        </div>
       </div>
 
       <div className="about-section data-notice">
         <h3>A Note on Data Accuracy</h3>
         <p>
-          This data comes directly from the NDWR database and has known limitations you should be aware of:
+          Our data process to enhance the raw NDWR records:
+        </p>
+        <ul>
+          <li>Importing raw well log records from the NDWR Well Log Query system</li>
+          <li>Matching wells to parcel boundaries using the state assessor's parcel number (APN)</li>
+          <li>Looking up parcel centroids from the official Nevada GIS service to correct known GPS coordinate issues</li>
+          <li>Selectively reading the original scanned well log PDFs to verify APNs, addresses, and well data</li>
+        </ul>
+        <p>
+          Even with these steps, the source data has known limitations you should be aware of:
         </p>
         <ul>
           <li>
@@ -229,15 +284,27 @@ export default function Dashboard({ wells, onSearch }: { wells: Well[]; onSearch
         </div>
       </div>
 
-      <footer className="footer">
+      <div className="about-section">
+        <h3>About This Site</h3>
         <p>
-          This site is built using publicly available well log data from
-          the <a href="https://water.nv.gov" target="_blank" rel="noopener noreferrer">Nevada Division of Water Resources</a>.
-          The authors make no claim of ownership over this data and provide it as-is for informational purposes only.
-          No guarantee is made regarding the accuracy, completeness, or timeliness of the information presented.
-          This site is not affiliated with or endorsed by the State of Nevada, Storey County, or any government agency.
-          Do not rely on this data for permitting, drilling, legal, or financial decisions — always consult
-          the official NDWR records and a licensed professional.
+          Built by a local resident who was shopping for property in Virginia City Highlands and got
+          frustrated trying to make sense of the state's well log data. The government websites have the
+          information, but good luck actually finding what you need. So this happened — a simple tool that
+          takes publicly available well log data from the Nevada Division of Water Resources and makes it
+          searchable by address, visible on a map, and broken down into the numbers that actually matter
+          when you're looking at land or planning a well. Whether you're a homeowner exploring your options,
+          a buyer doing due diligence, or just curious about the water under your feet, this is for you.
+          Currently this site only covers the Virginia City Highlands area. Owner names have been
+          abbreviated for privacy. Data last refreshed May 27, 2026.
+        </p>
+      </div>
+
+      <footer className="footer-mini">
+        <p>
+          Data sourced from <a href="https://water.nv.gov" target="_blank" rel="noopener noreferrer">Nevada Division of Water Resources</a> ·
+          Last refreshed May 27, 2026 ·
+          Built by <a href="mailto:jason@jasonmills.io">Jason Mills</a> ·
+          <button className="link-button" onClick={onShowTerms}>Terms & Disclaimer</button>
         </p>
       </footer>
     </div>

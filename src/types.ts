@@ -18,4 +18,21 @@ export interface Well {
   apn: string
   workType: string
   proposedUse: string
+  pdfUrl?: string
+  parcelApn?: string | null
+  parcelLat?: number | null
+  parcelLng?: number | null
+  parcelAcres?: number | null
+  originalLat?: number | null
+  originalLng?: number | null
+  gpsSource?: string
+  dataQuality?: string
+  scanAddress?: string | null
+  scanOwner?: string | null
+  scanConfidence?: string | null
+  scanLat?: number | null
+  scanLng?: number | null
+  scanApn?: string | null
+  verifiedLat?: number | null
+  verifiedLng?: number | null
 }
