@@ -23,16 +23,21 @@ WELLS_PATH = Path(__file__).parent.parent / "src" / "data" / "wells.json"
 
 
 def well_apn_to_parcel_apn(well_apn: str) -> str:
+    """
+    Convert well log APN (e.g. 003-331-10 or 033-381-02) to parcel APN
+    used by the state GIS (e.g. 333110 or 338102).
+    Rule: take last digit of book, concat with page and parcel.
+    """
     if not well_apn or "-" not in well_apn:
         return None
     parts = well_apn.split("-")
     if len(parts) != 3:
         return None
     try:
-        book = int(parts[0])
+        book_digit = str(int(parts[0]))[-1]
     except ValueError:
         return None
-    return f"{book}{parts[1]}{parts[2]}"
+    return f"{book_digit}{parts[1]}{parts[2]}"
 
 
 def pdf_url(well_id: str) -> str:

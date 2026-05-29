@@ -108,7 +108,8 @@ export function normalizeApnForParcel(wellApn: string): string | null {
   if (parts.length !== 3) return null
   const book = parseInt(parts[0])
   if (isNaN(book)) return null
-  return `${book}${parts[1]}${parts[2]}`
+  const bookDigit = String(book).slice(-1)
+  return `${bookDigit}${parts[1]}${parts[2]}`
 }
 
 const PARCEL_QUERY_URL = 'https://arcgis.water.nv.gov/arcgis/rest/services/BaseLayers/County_Parcels_in_Nevada/MapServer/0/query'

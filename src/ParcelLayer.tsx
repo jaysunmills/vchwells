@@ -25,7 +25,8 @@ function wellApnToParcelApn(wellApn: string): string | null {
   if (parts.length !== 3) return null
   const book = parseInt(parts[0])
   if (isNaN(book)) return null
-  return `${book}${parts[1]}${parts[2]}`
+  const bookDigit = String(book).slice(-1)
+  return `${bookDigit}${parts[1]}${parts[2]}`
 }
 
 interface ParcelLayerProps {
@@ -102,6 +103,24 @@ export default function ParcelLayer({ wells, onMatchedWells, searchParcelApn, se
           if (matched) {
             parcelWells.set(fi, matched)
             for (const w of matched) matchedIds.add(w.id)
+          }
+        }
+
+        // Spatial fallback: for wells whose APN didn't match any parcel,
+        // try to find a parcel that contains the well's original coordinates.
+        for (const well of wells) {
+          if (matchedIds.has(well.id)) continue
+          const lat = well.originalLat ?? well.lat
+          const lng = well.originalLng ?? well.lng
+          if (lat == null || lng == null) continue
+          for (let fi = 0; fi < data.features.length; fi++) {
+            const feature = data.features[fi]
+            if (feature.geometry && isPointInFeature(lat, lng, feature.geometry)) {
+              if (!parcelWells.has(fi)) parcelWells.set(fi, [])
+              parcelWells.get(fi)!.push(well)
+              matchedIds.add(well.id)
+              break
+            }
           }
         }
 

@@ -29,10 +29,10 @@ def well_apn_to_parcel_apn(well_apn: str) -> str:
     if len(parts) != 3:
         return None
     try:
-        book = int(parts[0])
+        book_digit = str(int(parts[0]))[-1]
     except ValueError:
         return None
-    return f"{book}{parts[1]}{parts[2]}"
+    return f"{book_digit}{parts[1]}{parts[2]}"
 
 
 def normalize_apn(apn: str) -> str:
